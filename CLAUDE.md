@@ -1,10 +1,8 @@
 # Todo App - Claude Code Instructions
 
-## ⚠️ Current Repository State
+## Current Repository State
 
-This repository currently contains **planning and reference documentation only** — `README.md`, `USER_GUIDE.md`, `EVALUATION.md`, `PRPs/*.md`, and `.github/copilot-instructions.md` describe the **target implementation** of a Todo App. The actual Next.js source code (`app/`, `lib/`, `middleware.ts`, `package.json`, `tests/`, etc.) does not exist in this repo yet.
-
-Everything below describes the architecture and conventions the app **must follow once implemented**. When asked to build or extend a feature, scaffold the project structure described here rather than assuming it already exists — check with `ls`/`find` first.
+All 11 PRP features are implemented (Next.js 16.4, React 19, Tailwind 4, better-sqlite3, SimpleWebAuthn 14). `PRPs/*.md`, `USER_GUIDE.md` and `EVALUATION.md` remain the specs. Where the implementation intentionally deviates from a PRP code sample, it is noted under **Implementation Notes** below.
 
 ## Architecture Overview
 
@@ -23,7 +21,7 @@ A **Next.js 16** todo application with WebAuthn authentication, using **better-s
 - **WebAuthn only** - no traditional passwords
 - Uses `@simplewebauthn/server` and `@simplewebauthn/browser` libraries
 - Session tokens stored as HTTP-only cookies via `lib/auth.ts` (JWT with 7-day expiry)
-- Middleware (`middleware.ts`) protects `/` and `/calendar` routes
+- `proxy.ts` protects `/` and `/calendar` routes (Next.js 16 renamed `middleware.ts` → `proxy.ts`; same behaviour)
 - When modifying authenticator logic, **always use `?? 0` for counter field** to handle undefined values:
   ```typescript
   counter: authenticator.counter ?? 0
@@ -95,7 +93,8 @@ npm run lint          # ESLint check
 
 ### Testing
 ```bash
-npx playwright test                    # Run all E2E tests
+npm run test:unit                      # Unit tests (node:test via tsx) — pure logic + DB layer on :memory:
+npx playwright test                    # Run all E2E tests (builds, then serves on :3100 with todos.test.db)
 npx playwright test --ui              # Interactive UI mode
 npx playwright test tests/02-todo-crud.spec.ts  # Single test file
 npx playwright show-report            # View HTML report
@@ -170,14 +169,28 @@ import { Priority, RecurrencePattern, Todo, Template } from '@/lib/db';
 4. **Recurring todos need special handling** - see PUT `/api/todos/[id]` for completion logic
 5. **WebAuthn credentials use base64/base64url encoding** - buffer conversions required
 
-## File Reference (target layout)
+## File Reference
 
-- **Auth**: `lib/auth.ts`, `middleware.ts`, `app/api/auth/**`
-- **Database**: `lib/db.ts` (single file, ~700 lines)
+- **Auth**: `lib/auth.ts` (cookies), `lib/session.ts` (JWT, used by proxy too), `lib/webauthn.ts` (RP config + challenge store), `proxy.ts`, `app/api/auth/**`
+- **Database**: `lib/db.ts` (single file); shared types/constants in `lib/types.ts` (re-exported by `db.ts`)
 - **Timezone**: `lib/timezone.ts`
-- **Main UI**: `app/page.tsx` (~2200 lines, feature-rich)
-- **API Routes**: `app/api/**/*.ts` (RESTful structure)
-- **Tests**: `tests/*.spec.ts`, `tests/helpers.ts`
+- **Pure logic**: `lib/recurrence.ts`, `lib/todoSort.ts`, `lib/filters.ts`, `lib/calendar.ts`, `lib/reminders.ts`, `lib/csv.ts`, `lib/validation.ts`, `lib/todoInput.ts`, `lib/templateInput.ts`, `lib/templateSubtasks.ts`
+- **Main UI**: `app/page.tsx` (monolithic client component), `app/calendar/page.tsx`, `app/login/page.tsx`
+- **API Routes**: `app/api/**/route.ts`
+- **Holidays**: `lib/holidays-data.ts` (SG 2025–2027), `scripts/seed-holidays.ts`; auto-seeded on first DB open
+- **Tests**: `tests/unit/*.test.ts`, `tests/*.spec.ts`, `tests/helpers.ts`
+
+## Implementation Notes (deviations from PRP samples)
+
+- **Client imports**: client components import runtime values from `@/lib/types`, never `@/lib/db` — importing `db.ts` would pull `better-sqlite3` into the browser bundle. `import type` from either is fine.
+- **Lazy DB connection**: `lib/db.ts` opens SQLite on first query (`getDb()`), not at import. `next build` imports route modules from many parallel workers; opening at import caused `SQLITE_BUSY`. Prepared statements are compiled lazily too (`lazyStatements`).
+- **Date storage**: due dates are ISO strings with an explicit `+08:00` offset (e.g. `2026-11-20T14:00:00+08:00`). `getSingaporeNow()` returns the current instant; all rendering goes through `formatSingaporeDate`/`toSingaporeISO`. `datetime-local` inputs are interpreted as Singapore wall-clock time via `singaporeInputToISO`.
+- **`PUT /api/todos/[id]`** returns `{ todo, nextInstance? }` (PRP 03 shape) for every update.
+- **SimpleWebAuthn v14** uses `credential: { id, publicKey, counter, transports }` — not the older `authenticator: { credentialID, ... }` shape in PRP 11.
+- **Reminders**: reminders for todos more than 24h overdue are not fired (stale-reminder policy, `lib/reminders.ts`). `last_notification_sent` resets only when `due_date`/`reminder_minutes` actually change.
+- **Templates**: recurring or reminder templates require a due-date offset (enforced at save time).
+- **Challenge store** is in-process memory — fine for a single Node instance (Railway); move to the DB for multi-instance deploys.
+- **SQLite on Vercel** does not persist; deploy to Railway (or swap the DB) for real use. Set `JWT_SECRET` in production (required) — see `.env.example`.
 
 ## Related Documentation
 
